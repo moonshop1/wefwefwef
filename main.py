@@ -7,20 +7,34 @@ import random
 import datetime
 import asyncio
 from pymongo import MongoClient
-import keep_alive
+import keep_alive  
 
 # --- ⚙️ CONFIGURATION & DATABASE ⚙️ ---
-# This keeps the bot online on Render
 keep_alive.keep_alive()
 
-# Get secrets from Render Environment Variables
-TOKEN = os.environ.get("BOT_TOKEN") 
-MONGO_URI = os.environ.get("MONGO_URI")
+# This uses os.getenv which is safer for Render
+TOKEN = os.getenv("BOT_TOKEN") 
+MONGO_URI = os.getenv("MONGO_URI")
+
+# 🚨 EMERGENCY LOGGING (Check your Render logs for these messages!)
+if TOKEN is None:
+    print("❌ ERROR: The bot cannot find 'BOT_TOKEN'. Check Render -> Environment -> Secret Files/Variables.")
+else:
+    print(f"✅ Token detected (Length: {len(TOKEN)})")
+
+if MONGO_URI is None:
+    print("❌ ERROR: The bot cannot find 'MONGO_URI'.")
+else:
+    print("✅ MongoDB URI detected.")
 
 # Connect to MongoDB
-cluster = MongoClient(MONGO_URI)
-db = cluster["MoonShop"]
-collection = db["Data"]
+try:
+    cluster = MongoClient(MONGO_URI)
+    db = cluster["MoonShop"]
+    collection = db["Data"]
+    print("✅ MongoDB Connected Successfully!")
+except Exception as e:
+    print(f"❌ DATABASE CONNECTION ERROR: {e}")
 
 # --- SETUP ---
 OWNER_IDS = [1447404658053091388, 1142465701043503125]
@@ -833,5 +847,6 @@ async def say(interaction: discord.Interaction, message: str, channel: discord.T
     if channel is None: channel = interaction.channel
     await channel.send(message)
     await interaction.response.send_message("✅ Message sent!", ephemeral=True)
+
 
 bot.run(TOKEN)
