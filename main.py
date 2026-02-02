@@ -53,7 +53,7 @@ class MoonBot(commands.Bot):
         super().__init__(command_prefix="!", intents=intents)
         self.synced = False
 
- async def on_ready(self):
+    async def on_ready(self):
         await self.wait_until_ready()
         
         # This is the "Magic Fix" for Interaction Failed
