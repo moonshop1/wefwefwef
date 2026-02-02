@@ -53,15 +53,21 @@ class MoonBot(commands.Bot):
         super().__init__(command_prefix="!", intents=intents)
         self.synced = False
 
-    async def on_ready(self):
+ async def on_ready(self):
         await self.wait_until_ready()
+        
+        # This is the "Magic Fix" for Interaction Failed
         if not self.synced:
+            self.add_view(MainHub()) 
+            # If you have buttons INSIDE the tickets (Claim/Close), add that view too:
+            # self.add_view(TicketControls(None)) 
+            
             await self.tree.sync()
             self.synced = True
+            
         print(f"✅ Logged in as {self.user}")
-        print(f"🌕 Moon's Shop Database Connected.")
-        await self.change_presence(activity=discord.Activity(type=discord.ActivityType.watching, name="Moon's Shop | /help"))
-
+        print(f"🌕 Moon's Shop | Persistent Views Loaded.")
+        
 bot = MoonBot()
 
 # --- 💾 DATABASE FUNCTIONS (MongoDB) ---
