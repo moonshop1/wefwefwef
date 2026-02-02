@@ -46,6 +46,7 @@ MOD_RECEIPT_CHANNEL_ID = 1467351881251684477
 intents = discord.Intents.default()
 intents.message_content = True
 intents.members = True
+intents.invites = True
 
 class MoonBot(commands.Bot):
     def __init__(self):
@@ -448,6 +449,70 @@ async def buycoins(interaction: discord.Interaction, amount: int, method: app_co
     view = PayConfirmView(amount, method.value, total, note)
     await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
 
+# --- 📢 REFERRAL SYSTEM ---
+
+@bot.tree.command(name="refer", description="Generate your unique invite link and earn Moon Coins for joins")
+async def refer(interaction: discord.Interaction):
+    user_id = str(interaction.user.id)
+    data = load_data()
+    
+    # Check if they already have a link saved
+    if "referrals" not in data: data["referrals"] = {}
+    
+    if user_id in data["referrals"]:
+        invite_url = data["referrals"][user_id].get("invite_url")
+        total_referrals = data["referrals"][user_id].get("count", 0)
+    else:
+        # Create a new permanent invite link for this user
+        # Note: Set max_age=0 for permanent and max_uses=0 for unlimited
+        invite = await interaction.channel.create_invite(reason=f"Referral link for {interaction.user.name}", max_age=0, max_uses=0)
+        invite_url = invite.url
+        
+        # Save to DB
+        data["referrals"][user_id] = {
+            "invite_url": invite_url,
+            "invite_code": invite.code,
+            "count": 0
+        }
+        save_data(data)
+        total_referrals = 0
+
+    embed = discord.Embed(title="🔗 YOUR REFERRAL LINK", color=0xF1C40F)
+    embed.description = f"Share this link to earn **0.0001 {SYMBOL}** per real join!\n\n**Your Link:** {invite_url}"
+    embed.add_field(name="Total Referrals", value=f"`{total_referrals}` users", inline=True)
+    embed.add_field(name="Total Earned", value=f"`{total_referrals * 0.0001:.5f}` {SYMBOL}", inline=True)
+    embed.set_footer(text="Faking joins with bots will get you blacklisted.")
+    
+    await interaction.response.send_message(embed=embed, ephemeral=True)
+
+# --- 🚀 AUTOMATIC TRACKER ---
+
+@bot.event
+async def on_member_join(member):
+    data = load_data()
+    if "referrals" not in data: return
+
+    # Get the current invites in the guild to see which one's use-count increased
+    invites = await member.guild.invites()
+    
+    for invite in invites:
+        # Find the user who owns this invite code in our database
+        for user_id, info in data["referrals"].items():
+            if info["invite_code"] == invite.code:
+                # If this invite's uses in Discord is higher than our recorded count
+                # We reward the owner
+                if invite.uses > info["count"]:
+                    # Update referral count
+                    data["referrals"][user_id]["count"] = invite.uses
+                    save_data(data)
+                    
+                    # PAYOUT: Add 0.0001 Moon Coins
+                    update_balance(int(user_id), 0.0001)
+                    
+                    # Optional: Log the payout in a channel
+                    print(f"💰 Payout: {user_id} earned 0.0001 for referral.")
+                    return
+
 # --- 🎰 GAMES & UTILITY ---
 
 @bot.tree.command(name="roulette", description="Bet your coins! Red/Black/Green")
@@ -584,6 +649,24 @@ async def close(interaction: discord.Interaction):
     await asyncio.sleep(5)
     await interaction.channel.delete()
 
+class WebsiteView(discord.ui.View):
+    def __init__(self):
+        super().__init__()
+        # Adding the link button
+        self.add_item(discord.ui.Button(label="Visit Moon's Shop", url="https://moons-shop.mysellauth.com", style=discord.ButtonStyle.link))
+
+@bot.tree.command(name="website", description="Get the link to our official webstore")
+async def website(interaction: discord.Interaction):
+    embed = discord.Embed(
+        title="🌕 MOON'S SHOP | OFFICIAL STORE", 
+        description="Check out our full catalog and purchase automatically via our website.", 
+        color=0x3498db
+    )
+    embed.add_field(name="🔗 Webstore", value="[moons-shop.mysellauth.com](https://moons-shop.mysellauth.com)", inline=False)
+    embed.set_thumbnail(url=bot.user.avatar.url if bot.user.avatar else None)
+    
+    await interaction.response.send_message(embed=embed, view=WebsiteView())
+
 # --- 👮 SHIFT MANAGEMENT SYSTEM (Updated) ---
 # ⚠️ CONFIGURATION
 CH_ON_DUTY  = 1467278649265885297
@@ -677,6 +760,93 @@ async def on_message(message):
                 await message.channel.send(embed=embed)
 
             await message.add_reaction("😴")
+
+class VouchPaginator(discord.ui.View):
+    def __init__(self, vouches, per_page=5):
+        super().__init__(timeout=60)
+        self.vouches = list(reversed(vouches)) # Newest first
+        self.per_page = per_page
+        self.current_page = 0
+        self.max_pages = max(1, (len(vouches) - 1) // per_page + 1)
+
+    def create_embed(self):
+        start = self.current_page * self.per_page
+        end = start + self.per_page
+        page_content = self.vouches[start:end]
+
+        embed = discord.Embed(title="📋 Server Vouches", color=0x3498db)
+        if not page_content:
+            embed.description = "No vouches found yet."
+            return embed
+
+        for v in page_content:
+            stars = "⭐" * v['stars']
+            embed.add_field(
+                name=f"{v['user']} — {stars}",
+                value=f"💰 **Price:** {v['price']}\n💬 {v['note']}\n🗓️ *{v['date']}*\n",
+                inline=False
+            )
+        embed.set_footer(text=f"Total Vouches: {len(self.vouches)}")
+        return embed
+
+    def update_buttons(self):
+        # Disable Back if on first page
+        self.back_btn.disabled = (self.current_page == 0)
+        # Disable Next if on last page
+        self.next_btn.disabled = (self.current_page >= self.max_pages - 1)
+        # Update the Page counter button label
+        self.page_counter.label = f"Page {self.current_page + 1} / {self.max_pages}"
+
+    @discord.ui.button(label="Back", style=discord.ButtonStyle.gray)
+    async def back_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+        self.current_page -= 1
+        self.update_buttons()
+        await interaction.response.edit_message(embed=self.create_embed(), view=self)
+
+    @discord.ui.button(label="...", style=discord.ButtonStyle.gray, disabled=True)
+    async def page_counter(self, interaction: discord.Interaction, button: discord.ui.Button):
+        pass # Just a label
+
+    @discord.ui.button(label="Next", style=discord.ButtonStyle.gray)
+    async def next_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+        self.current_page += 1
+        self.update_buttons()
+        await interaction.response.edit_message(embed=self.create_embed(), view=self)
+
+@bot.tree.command(name="vouches", description="Show all server vouches with pagination")
+async def vouches(interaction: discord.Interaction):
+    data = load_data()
+    vouch_list = data.get("vouch_list", [])
+    
+    if not vouch_list:
+        await interaction.response.send_message("❌ No vouches recorded yet.")
+        return
+
+    view = VouchPaginator(vouch_list)
+    view.update_buttons()
+    await interaction.response.send_message(embed=view.create_embed(), view=view)
+
+@bot.tree.command(name="restock", description="ADMIN: Announce a restock in a specific channel")
+@app_commands.describe(item="Name of the product", amount="How many were added?", channel="Where to send the alert")
+async def restock(interaction: discord.Interaction, item: str, amount: int, channel: discord.TextChannel):
+    if interaction.user.id not in OWNER_IDS:
+        await interaction.response.send_message("❌ Admin only.", ephemeral=True)
+        return
+
+    embed = discord.Embed(
+        title="📦 NEW STOCK ARRIVED", 
+        description=f"We have just restocked **{item}**!", 
+        color=0x2ECC71,
+        timestamp=datetime.datetime.now()
+    )
+    embed.add_field(name="Product", value=f"`{item}`", inline=True)
+    embed.add_field(name="Quantity Added", value=f"`+{amount}`", inline=True)
+    embed.add_field(name="Status", value="✅ Available Now", inline=False)
+    embed.set_footer(text="Get it before it's gone!")
+    
+    # Send to the chosen channel with an @here ping to notify buyers
+    await channel.send(content="@here", embed=embed)
+    await interaction.response.send_message(f"✅ Restock alert sent to {channel.mention}!", ephemeral=True)
 
     # 🥪 BREAK LOGIC
     elif message.channel.id == CH_BREAK:
@@ -781,16 +951,63 @@ async def weekly(interaction: discord.Interaction):
     embed = discord.Embed(title="📅 Weekly Reward", description=f"Here is your allowance.\n\n**Received:** {earnings:.8f} {SYMBOL}", color=0x2ECC71)
     await interaction.response.send_message(embed=embed)
 
+@bot.tree.command(name="vouch", description="Leave a vouch for a deal")
+@app_commands.describe(stars="1-5 Stars", price="How much did you pay?", note="What did you buy/comment?")
+@app_commands.choices(stars=[
+    app_commands.Choice(name="⭐⭐⭐⭐⭐ (5)", value=5),
+    app_commands.Choice(name="⭐⭐⭐⭐ (4)", value=4),
+    app_commands.Choice(name="⭐⭐⭐ (3)", value=3),
+    app_commands.Choice(name="⭐⭐ (2)", value=2),
+    app_commands.Choice(name="⭐ (1)", value=1)
+])
+async def vouch(interaction: discord.Interaction, stars: app_commands.Choice[int], price: str, note: str):
+    # Log the vouch to the database
+    data = load_data()
+    if "vouches" not in data: data["vouches"] = 0
+    data["vouches"] += 1
+    save_data(data)
+
+    star_str = "⭐" * stars.value
+    
+    embed = discord.Embed(title="✅ NEW VOUCH RECEIVED", color=0x2ECC71, timestamp=datetime.datetime.now())
+    embed.add_field(name="👤 Customer", value=interaction.user.mention, inline=True)
+    embed.add_field(name="🌟 Rating", value=star_str, inline=True)
+    embed.add_field(name="💰 Price Paid", value=f"`{price}`", inline=True)
+    embed.add_field(name="📝 Review", value=f"```{note}```", inline=False)
+    
+    # You can set this to your specific #vouches channel ID
+    VOUCH_CHANNEL_ID = 1467351881251684477 
+    vouch_channel = bot.get_channel(VOUCH_CHANNEL_ID)
+    
+    if vouch_channel:
+        await vouch_channel.send(embed=embed)
+        await interaction.response.send_message(f"🙏 Thanks for the vouch! It has been posted in <#{VOUCH_CHANNEL_ID}>.", ephemeral=True)
+    else:
+        await interaction.response.send_message(embed=embed) # Falls back to current channel
+
 # --- 🌙 ADMIN EXTRAS ---
 
-@bot.tree.command(name="night_market", description="ADMIN: Open/Close the Night Market")
-async def night_market(interaction: discord.Interaction, status: str):
+@bot.tree.command(name="night_market", description="ADMIN: Open the Night Market with a custom discount")
+@app_commands.describe(status="OPEN or CLOSED", discount_percent="Percentage off (e.g. 30 for 30%)")
+async def night_market(interaction: discord.Interaction, status: str, discount_percent: int = 0):
     if interaction.user.id not in OWNER_IDS: return
+    
+    data = load_data()
     if status.lower() == "open":
-        embed = discord.Embed(title="🌙 THE NIGHT MARKET IS OPEN 🌙", description="Prices have dropped by 30%! Buy now before the sun rises.", color=0x9B59B6)
+        data["night_market"] = {"active": True, "discount": discount_percent}
+        save_data(data)
+        
+        embed = discord.Embed(
+            title="🌙 THE NIGHT MARKET IS OPEN", 
+            description=f"Everything in the shop is now **{discount_percent}% OFF**!", 
+            color=0x9B59B6
+        )
+        embed.set_footer(text="Limited time only. Grab your gear while it lasts.")
         await interaction.response.send_message(content="@everyone", embed=embed)
     else:
-        await interaction.response.send_message("🔒 **Night Market is now CLOSED.** Prices returned to normal.")
+        data["night_market"] = {"active": False, "discount": 0}
+        save_data(data)
+        await interaction.response.send_message("🔒 **Night Market closed.** Prices are back to normal.")
 
 @bot.tree.command(name="drop_steal", description="ADMIN: Drop a Daily Steal")
 async def drop_steal(interaction: discord.Interaction, item: str, price: int, stock: int):
@@ -848,5 +1065,148 @@ async def say(interaction: discord.Interaction, message: str, channel: discord.T
     await channel.send(message)
     await interaction.response.send_message("✅ Message sent!", ephemeral=True)
 
+# --- ⚖️ TAX CONFIGURATION ---
+TAX_PERCENT = 3 # Change this number to your server's tax rate
+
+@bot.tree.command(name="tax", description="Calculate how much to send so the receiver gets the exact amount")
+@app_commands.describe(amount="The amount the receiver should GET")
+async def tax(interaction: discord.Interaction, amount: float):
+    if amount <= 0:
+        await interaction.response.send_message("❌ Amount must be higher than 0.", ephemeral=True)
+        return
+
+    # Formula: To get 'X', you must send 'X / (1 - TaxRate)'
+    # Example: To get 100 with 3% tax, you send 103.09
+    send_amount = amount / (1 - (TAX_PERCENT / 100))
+    tax_fee = send_amount - amount
+
+    embed = discord.Embed(title="⚖️ TAX CALCULATOR", color=0xF1C40F)
+    embed.add_field(name="Desired Amount", value=f"{amount:.4f} {SYMBOL}", inline=True)
+    embed.add_field(name="Tax Rate", value=f"{TAX_PERCENT}%", inline=True)
+    embed.add_field(name="🛑 YOU MUST SEND", value=f"**{send_amount:.4f} {SYMBOL}**", inline=False)
+    embed.add_field(name="Fee Paid", value=f"{tax_fee:.4f} {SYMBOL}", inline=True)
+    
+    embed.set_footer(text="Calculation based on standard server fees.")
+    
+    await interaction.response.send_message(embed=embed)
+
+import discord
+from discord import app_commands, ui
+import datetime
+import asyncio
+import io
+
+# --- ⚙️ CONFIG ---
+LOG_CHANNEL_ID = 1467351881251684477 
+
+# --- 🛠️ TICKET CONTROLS (Staff Side) ---
+class TicketControls(ui.View):
+    def __init__(self, creator):
+        super().__init__(timeout=None)
+        self.creator = creator
+
+    @ui.button(label="Claim", style=discord.ButtonStyle.success, emoji="✅")
+    async def claim(self, interaction: discord.Interaction, button: ui.Button):
+        button.disabled = True
+        button.label = f"Claimed by {interaction.user.display_name}"
+        await interaction.response.edit_message(view=self)
+        await interaction.channel.send(f"⚡ **{interaction.user.mention}** is now assisting you!")
+
+    @ui.button(label="Close", style=discord.ButtonStyle.danger, emoji="🔒")
+    async def close(self, interaction: discord.Interaction, button: ui.Button):
+        # 1. Create Transcript
+        transcript = ""
+        async for message in interaction.channel.history(limit=None, oldest_first=True):
+            time = message.created_at.strftime('%Y-%m-%d %H:%M:%S')
+            transcript += f"[{time}] {message.author}: {message.content}\n"
+        
+        file = discord.File(io.BytesIO(transcript.encode()), filename=f"transcript-{interaction.channel.name}.txt")
+
+        # 2. Log to Admin Channel
+        log_chan = interaction.guild.get_channel(LOG_CHANNEL_ID)
+        if log_chan:
+            log_embed = discord.Embed(title="🎟️ TICKET CLOSED", color=0xff4747, timestamp=datetime.datetime.now())
+            log_embed.add_field(name="User", value=self.creator.mention)
+            log_embed.add_field(name="Closed By", value=interaction.user.mention)
+            await log_chan.send(embed=log_embed, file=file)
+
+        # 3. Final Rating Request & Deletion
+        await interaction.response.send_message("🔒 **Ticket Closing...** Sending transcript to DMs.")
+        try:
+            await self.creator.send(f"👋 Your ticket in **{interaction.guild.name}** has been closed. Here is your transcript:", file=discord.File(io.BytesIO(transcript.encode()), filename="receipt.txt"))
+        except: pass # DMs closed
+        
+        await asyncio.sleep(5)
+        await interaction.channel.delete()
+
+# --- 📋 MODALS (Double the Fields) ---
+class PurchaseModal(ui.Modal, title="🛍️ New Order Inquiry"):
+    item = ui.TextInput(label="What are you buying?", placeholder="Netflix, MC, etc.", required=True)
+    qty = ui.TextInput(label="Quantity", default="1", required=True)
+    pay = ui.TextInput(label="Payment Method", placeholder="PayPal, LTC, etc.", required=True)
+    vouch = ui.TextInput(label="Vouch Proof", placeholder="Link to your vouches", required=False)
+    tos = ui.TextInput(label="Agree to TOS?", placeholder="Type 'YES' to confirm", required=True)
+
+    async def on_submit(self, interaction: discord.Interaction):
+        await create_ticket(interaction, "Order", self)
+
+class CoinModal(ui.Modal, title="🪙 Moon Coin Exchange"):
+    amt = ui.TextInput(label="Amount of Coins", placeholder="e.g. 50,000", required=True)
+    pay = ui.TextInput(label="Method", placeholder="PayPal/Crypto", required=True)
+    disc = ui.TextInput(label="Discount Code", placeholder="None", required=False)
+
+    async def on_submit(self, interaction: discord.Interaction):
+        await create_ticket(interaction, "Coins", self)
+
+# --- 🚀 LOGIC ---
+async def create_ticket(interaction, cat, data):
+    guild = interaction.guild
+    # Only user and bot permissions (Staff handled by Category)
+    overwrites = {
+        guild.default_role: discord.PermissionOverwrite(read_messages=False),
+        interaction.user: discord.PermissionOverwrite(read_messages=True, send_messages=True, attach_files=True),
+        guild.me: discord.PermissionOverwrite(read_messages=True, send_messages=True)
+    }
+
+    channel = await guild.create_text_channel(name=f"{cat}-{interaction.user.name}", overwrites=overwrites)
+    
+    embed = discord.Embed(title=f"🎟️ {cat.upper()} DISPATCH", color=0x2b2d31, timestamp=datetime.datetime.now())
+    embed.set_author(name=interaction.user.name, icon_url=interaction.user.display_avatar.url)
+    
+    if cat == "Order":
+        embed.add_field(name="📦 Item", value=f"```\n{data.item.value}\n```", inline=False)
+        embed.add_field(name="💳 Method", value=f"`{data.pay.value}`", inline=True)
+        embed.add_field(name="✅ TOS", value=f"`{data.tos.value}`", inline=True)
+    else:
+        embed.add_field(name="🪙 Coins", value=f"```\n{data.amt.value}\n```", inline=False)
+        embed.add_field(name="💳 Method", value=f"`{data.pay.value}`", inline=True)
+
+    embed.set_footer(text="Wait for a staff member to claim this ticket.")
+    await channel.send(content=f"{interaction.user.mention} | New Ticket!", embed=embed, view=TicketControls(interaction.user))
+    await interaction.response.send_message(f"✅ Ticket opened: {channel.mention}", ephemeral=True)
+
+# --- 🔘 MAIN PANEL ---
+class MainHub(ui.View):
+    def __init__(self): super().__init__(timeout=None)
+
+    @ui.button(label="Buy Items", style=discord.ButtonStyle.primary, emoji="🛒", custom_id="m_items")
+    async def items(self, interaction: discord.Interaction, btn: ui.Button):
+        await interaction.response.send_modal(PurchaseModal())
+
+    @ui.button(label="Buy Coins", style=discord.ButtonStyle.success, emoji="💰", custom_id="m_coins")
+    async def coins(self, interaction: discord.Interaction, btn: ui.Button):
+        await interaction.response.send_modal(CoinModal())
+
+# --- 🚀 COMMAND ---
+@bot.tree.command(name="ticket_setup", description="ADMIN: Deploy the 3.0 Shop Hub")
+async def ticket_setup(interaction: discord.Interaction):
+    if interaction.user.id not in OWNER_IDS: return
+    
+    embed = discord.Embed(title="🌕 MOON'S SHOP | COMMAND CENTER", color=0x000000)
+    embed.description = "Select a department to start. **Fake tickets will result in a blacklist.**"
+    embed.set_image(url="https://i.imgur.com/4Dr7P4q.mp4") 
+    
+    await interaction.channel.send(embed=embed, view=MainHub())
+    await interaction.response.send_message("🚀 Shop Hub Online.", ephemeral=True)
 
 bot.run(TOKEN)
