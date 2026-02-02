@@ -761,34 +761,6 @@ async def on_message(message):
 
             await message.add_reaction("😴")
 
-class VouchPaginator(discord.ui.View):
-    def __init__(self, vouches, per_page=5):
-        super().__init__(timeout=60)
-        self.vouches = list(reversed(vouches)) # Newest first
-        self.per_page = per_page
-        self.current_page = 0
-        self.max_pages = max(1, (len(vouches) - 1) // per_page + 1)
-
-    def create_embed(self):
-        start = self.current_page * self.per_page
-        end = start + self.per_page
-        page_content = self.vouches[start:end]
-
-        embed = discord.Embed(title="📋 Server Vouches", color=0x3498db)
-        if not page_content:
-            embed.description = "No vouches found yet."
-            return embed
-
-        for v in page_content:
-            stars = "⭐" * v['stars']
-            embed.add_field(
-                name=f"{v['user']} — {stars}",
-                value=f"💰 **Price:** {v['price']}\n💬 {v['note']}\n🗓️ *{v['date']}*\n",
-                inline=False
-            )
-        embed.set_footer(text=f"Total Vouches: {len(self.vouches)}")
-        return embed
-
     def update_buttons(self):
         # Disable Back if on first page
         self.back_btn.disabled = (self.current_page == 0)
@@ -812,19 +784,6 @@ class VouchPaginator(discord.ui.View):
         self.current_page += 1
         self.update_buttons()
         await interaction.response.edit_message(embed=self.create_embed(), view=self)
-
-@bot.tree.command(name="vouches", description="Show all server vouches with pagination")
-async def vouches(interaction: discord.Interaction):
-    data = load_data()
-    vouch_list = data.get("vouch_list", [])
-    
-    if not vouch_list:
-        await interaction.response.send_message("❌ No vouches recorded yet.")
-        return
-
-    view = VouchPaginator(vouch_list)
-    view.update_buttons()
-    await interaction.response.send_message(embed=view.create_embed(), view=view)
 
 @bot.tree.command(name="restock", description="ADMIN: Announce a restock in a specific channel")
 @app_commands.describe(item="Name of the product", amount="How many were added?", channel="Where to send the alert")
@@ -925,39 +884,137 @@ async def weekly(interaction: discord.Interaction):
     embed = discord.Embed(title="📅 Weekly Reward", description=f"Here is your allowance.\n\n**Received:** {earnings:.8f} {SYMBOL}", color=0x2ECC71)
     await interaction.response.send_message(embed=embed)
 
-@bot.tree.command(name="vouch", description="Leave a vouch for a deal")
-@app_commands.describe(stars="1-5 Stars", price="How much did you pay?", note="What did you buy/comment?")
-@app_commands.choices(stars=[
-    app_commands.Choice(name="⭐⭐⭐⭐⭐ (5)", value=5),
-    app_commands.Choice(name="⭐⭐⭐⭐ (4)", value=4),
-    app_commands.Choice(name="⭐⭐⭐ (3)", value=3),
-    app_commands.Choice(name="⭐⭐ (2)", value=2),
-    app_commands.Choice(name="⭐ (1)", value=1)
-])
-async def vouch(interaction: discord.Interaction, stars: app_commands.Choice[int], price: str, note: str):
-    # Log the vouch to the database
-    data = load_data()
-    if "vouches" not in data: data["vouches"] = 0
-    data["vouches"] += 1
-    save_data(data)
+import discord
+from discord import app_commands, ui
+import datetime
+import re
 
-    star_str = "⭐" * stars.value
+# --- ⚙️ CONFIGURATION ---
+VOUCH_LOG_CHANNEL_ID = 1467102973208297676 # For admin review
+MIN_PRICE_FOR_VOUCH = 0.0001 # Minimum transaction size
+
+# --- 🚀 THE ELITE VOUCH COMMAND ---
+@bot.tree.command(name="vouch", description="Submit a high-tier verified vouch with proof of transaction")
+@app_commands.describe(
+    staff="The staff member or salesman who handled your deal",
+    stars="Rating from 1-5 (1=Poor, 5=Elite)",
+    price="Total amount paid (e.g., $50 or 500 MoonCoins)",
+    product="What did you buy? (e.g., Netflix, Spotify, Coins)",
+    note="A detailed review of your experience",
+    proof_link="Link to an image or message proving the deal (Optional)"
+)
+async def vouch(interaction: discord.Interaction, staff: discord.Member, stars: int, price: str, product: str, note: str, proof_link: str = None):
+    # 1. SECURITY CHECKS (Preventing Cheating)
+    if interaction.user.id == staff.id:
+        await interaction.response.send_message("❌ **Fraud Alert:** You cannot vouch for yourself!", ephemeral=True)
+        return
     
-    embed = discord.Embed(title="✅ NEW VOUCH RECEIVED", color=0x2ECC71, timestamp=datetime.datetime.now())
-    embed.add_field(name="👤 Customer", value=interaction.user.mention, inline=True)
-    embed.add_field(name="🌟 Rating", value=star_str, inline=True)
-    embed.add_field(name="💰 Price Paid", value=f"`{price}`", inline=True)
-    embed.add_field(name="📝 Review", value=f"```{note}```", inline=False)
+    if staff.bot:
+        await interaction.response.send_message("❌ You cannot vouch for a bot.", ephemeral=True)
+        return
+
+    if stars < 1 or stars > 5:
+        await interaction.response.send_message("❌ Rating must be between 1 and 5 stars.", ephemeral=True)
+        return
+
+    # 2. DATA ARCHITECTURE
+    vouch_id = "".join(random.choices(string.ascii_uppercase + string.digits, k=8))
+    timestamp = datetime.datetime.now()
     
-    # You can set this to your specific #vouches channel ID
-    VOUCH_CHANNEL_ID = 1467351881251684477 
-    vouch_channel = bot.get_channel(VOUCH_CHANNEL_ID)
+    vouch_entry = {
+        "vouch_id": vouch_id,
+        "customer_id": str(interaction.user.id),
+        "customer_name": interaction.user.name,
+        "staff_id": str(staff.id),
+        "staff_name": staff.name,
+        "stars": stars,
+        "price": price,
+        "product": product,
+        "note": note,
+        "proof": proof_link,
+        "timestamp": timestamp.strftime("%Y-%m-%d %H:%M:%S"),
+        "verified": True # Auto-verified unless flagged
+    }
+
+    # 3. MONGODB INTEGRATION (Database Save)
+    try:
+        data = load_data()
+        if "vouch_list" not in data: data["vouch_list"] = []
+        if "staff_stats" not in data: data["staff_stats"] = {}
+        
+        # Update Individual Staff Analytics
+        s_id = str(staff.id)
+        if s_id not in data["staff_stats"]:
+            data["staff_stats"][s_id] = {"total_stars": 0, "total_vouches": 0, "revenue_handled": 0}
+        
+        data["staff_stats"][s_id]["total_stars"] += stars
+        data["staff_stats"][s_id]["total_vouches"] += 1
+        data["vouch_list"].append(vouch_entry)
+        
+        save_data(data)
+    except Exception as e:
+        await interaction.response.send_message(f"⚠️ Database Error: {e}", ephemeral=True)
+        return
+
+    # 4. DESIGNING THE ELITE EMBED (The Visuals)
+    star_str = "⭐" * stars
+    if stars == 5: star_str = "🔥" * 5 # Special effect for perfect ratings
     
-    if vouch_channel:
-        await vouch_channel.send(embed=embed)
-        await interaction.response.send_message(f"🙏 Thanks for the vouch! It has been posted in <#{VOUCH_CHANNEL_ID}>.", ephemeral=True)
-    else:
-        await interaction.response.send_message(embed=embed) # Falls back to current channel
+    embed = discord.Embed(
+        title=f"💎 VERIFIED VOUCH #{vouch_id}",
+        description=f"A new successful transaction has been recorded for **Moon's Shop**.",
+        color=0x00ff95 if stars >= 4 else 0xffcc00,
+        timestamp=timestamp
+    )
+    
+    embed.set_author(name=interaction.user.display_name, icon_url=interaction.user.display_avatar.url)
+    embed.set_thumbnail(url="https://i.imgur.com/G5lO5iP.png") # Your shop logo
+    
+    embed.add_field(name="👨‍💼 Salesman", value=f"{staff.mention}\n`{staff.name}`", inline=True)
+    embed.add_field(name="⭐ Quality", value=f"{star_str}\n`{stars}/5 Rating`", inline=True)
+    embed.add_field(name="📦 Product", value=f"`{product}`", inline=True)
+    
+    embed.add_field(name="💰 Transaction Value", value=f"**{price}**", inline=True)
+    embed.add_field(name="🔗 Proof of Deal", value=f"[Click to View]({proof_link})" if proof_link else "`No Image Provided`", inline=True)
+    embed.add_field(name="📅 Date", value=f"<t:{int(timestamp.timestamp())}:D>", inline=True)
+    
+    embed.add_field(name="📝 Customer Review", value=f"```\n{note}\n```", inline=False)
+    
+    # Calculate Average for the Footer
+    avg_rating = data["staff_stats"][s_id]["total_stars"] / data["staff_stats"][s_id]["total_vouches"]
+    embed.set_footer(text=f"Staff Level: {'Elite' if avg_rating >= 4.5 else 'Certified'} | Avg: {avg_rating:.2f}⭐")
+
+    # 5. RESPONSE & LOGGING
+    await interaction.response.send_message(embed=embed)
+    
+    # Send to private admin log
+    log_chan = interaction.guild.get_channel(VOUCH_LOG_CHANNEL_ID)
+    if log_chan:
+        await log_chan.send(f"📑 **Audit Log:** New vouch for {staff.name} by {interaction.user.name} (Value: {price})")
+
+# --- 📊 THE COMPLICATED ANALYTICS COMMAND ---
+@bot.tree.command(name="staff_inspect", description="View deep-dive analytics for a specific staff member")
+async def staff_inspect(interaction: discord.Interaction, staff: discord.Member):
+    data = load_data()
+    stats = data.get("staff_stats", {}).get(str(staff.id))
+    
+    if not stats:
+        await interaction.response.send_message("❌ No data found for this staff member.", ephemeral=True)
+        return
+
+    avg = stats["total_stars"] / stats["total_vouches"]
+    
+    embed = discord.Embed(title=f"📊 PERFORMANCE REPORT: {staff.name}", color=0x3498db)
+    embed.add_field(name="🏆 Rank", value="`Top Seller`" if avg > 4.8 else "`Standard`", inline=True)
+    embed.add_field(name="⭐ Avg Rating", value=f"`{avg:.2f}/5.0`", inline=True)
+    embed.add_field(name="📈 Total Deals", value=f"`{stats['total_vouches']}`", inline=True)
+    
+    # Progress Bar UI
+    filled = int(avg * 2)
+    bar = "🟩" * filled + "⬜" * (10 - filled)
+    embed.add_field(name="Confidence Score", value=f"{bar} ({int(avg*20)}%)", inline=False)
+    
+    await interaction.response.send_message(embed=embed)
 
 # --- 🌙 ADMIN EXTRAS ---
 
@@ -1220,5 +1277,133 @@ async def on_message(message):
 
     # Important: This line allows other commands to still work
     await bot.process_commands(message)
+
+import random
+
+import discord
+from discord import app_commands, ui
+from discord.ext import tasks
+import random
+import datetime
+import asyncio
+
+# --- ⚙️ TITAN CONFIG ---
+LOTTO_PRICE = 0.3
+JACKPOT_PRIZE = 10.0
+MAX_NUM = 100
+LOTTO_WIN_CHANNEL_ID = 1467711698273304871 
+# Friday 5 PM (17:00) - Loop checks every minute
+DRAW_DAY = 4 # Friday (0=Mon, 4=Fri)
+DRAW_TIME = "17:00"
+
+# --- 🎰 THE TITAN LOTTERY ENGINE ---
+
+class LottoSystem:
+    def __init__(self, bot):
+        self.bot = bot
+        self.lotto_loop.start()
+
+    @tasks.loop(minutes=1)
+    async def lotto_loop(self):
+        now = datetime.datetime.now()
+        current_time = now.strftime("%H:%M")
+        
+        if now.weekday() == DRAW_DAY and current_time == DRAW_TIME:
+            await self.execute_weekly_draw()
+
+    async def execute_weekly_draw(self):
+        data = load_data()
+        tickets = data.get("active_lotto_tickets", {}) # {user_id: [[n1, n2, n3], [n1, n2, n3]]}
+        
+        if not tickets:
+            return
+
+        # Generate the Official Winning Numbers
+        winning_nums = sorted([random.randint(1, MAX_NUM) for _ in range(3)])
+        win_str = " - ".join(f"**{n}**" for n in winning_nums)
+        
+        winners = []
+        for u_id, user_tickets in tickets.items():
+            for t in user_tickets:
+                if sorted(t) == winning_nums:
+                    winners.append(u_id)
+                    data["balances"][u_id] = data["balances"].get(u_id, 0) + JACKPOT_PRIZE
+
+        # 🎀 CUTE ANNOUNCEMENT EMBED
+        channel = self.bot.get_channel(LOTTO_WIN_CHANNEL_ID)
+        if channel:
+            embed = discord.Embed(
+                title="✨ FRIDAY NIGHT JACKPOT DRAW ✨",
+                description=f"The stars have aligned! The winning numbers for this week are:\n\n🔥 {win_str} 🔥",
+                color=0xFF69B4, # Pink/Cute color
+                timestamp=datetime.datetime.now()
+            )
+            embed.set_thumbnail(url="https://i.imgur.com/vHqYl7f.png") # Crystal Ball/Luck Icon
+            
+            if winners:
+                mentions = ", ".join([f"<@{w}>" for w in winners])
+                embed.add_field(name="🎊 WINNERS 🎊", value=f"Congratulations to {mentions} for hitting the **{JACKPOT_PRIZE} MC** Jackpot!", inline=False)
+                content = "@here"
+            else:
+                embed.add_field(name="💔 RESULTS", value="No one matched the numbers this week. The jackpot stays cold!", inline=False)
+                content = None
+            
+            embed.set_footer(text="Next draw next Friday at 5 PM! | /lotto to enter")
+            await channel.send(content=content, embed=embed)
+
+        # Clear tickets for next week
+        data["active_lotto_tickets"] = {}
+        save_data(data)
+
+# --- 🚀 SLASH COMMANDS ---
+
+@bot.tree.command(name="lotto", description="TITAN: Purchase a ticket for the Friday 5PM Jackpot")
+@app_commands.describe(n1="1-100", n2="1-100", n3="1-100")
+async def lotto(interaction: discord.Interaction, n1: int, n2: int, n3: int):
+    u_id = str(interaction.user.id)
+    nums = [n1, n2, n3]
+
+    if any(n < 1 or n > MAX_NUM for n in nums):
+        return await interaction.response.send_message(f"❌ Choose numbers between 1 and {MAX_NUM}!", ephemeral=True)
+
+    data = load_data()
+    bal = data.get("balances", {}).get(u_id, 0)
+
+    if bal < LOTTO_PRICE:
+        return await interaction.response.send_message(f"❌ You need {LOTTO_PRICE} MC. Current: {bal:.4f}", ephemeral=True)
+
+    # Deduct & Save Ticket
+    data["balances"][u_id] -= LOTTO_PRICE
+    if "active_lotto_tickets" not in data: data["active_lotto_tickets"] = {}
+    if u_id not in data["active_lotto_tickets"]: data["active_lotto_tickets"][u_id] = []
+    
+    data["active_lotto_tickets"][u_id].append(nums)
+    save_data(data)
+
+    # 🎀 CUTE CONFIRMATION
+    embed = discord.Embed(
+        title="🎟️ TICKET PURCHASED",
+        description=f"You've entered the Friday Night Draw!\nYour Numbers: **{n1} - {n2} - {n3}**",
+        color=0xAD1457
+    )
+    embed.add_field(name="Cost", value=f"`{LOTTO_PRICE} MC`", inline=True)
+    embed.add_field(name="Potential Win", value=f"`{JACKPOT_PRIZE} MC`", inline=True)
+    embed.set_footer(text="Draws every Friday @ 5:00 PM EST")
+    
+    await interaction.response.send_message(embed=embed)
+
+@bot.tree.command(name="lotto_check", description="View how many tickets you have for the next draw")
+async def lotto_check(interaction: discord.Interaction):
+    data = load_data()
+    user_tickets = data.get("active_lotto_tickets", {}).get(str(interaction.user.id), [])
+    
+    if not user_tickets:
+        return await interaction.response.send_message("🔍 You don't have any active tickets for this Friday.", ephemeral=True)
+
+    embed = discord.Embed(title="🎫 YOUR TICKETS", color=0x5865F2)
+    ticket_list = "\n".join([f"• `{t[0]} - {t[1]} - {t[2]}`" for t in user_tickets])
+    embed.description = f"You have **{len(user_tickets)}** entries for the next draw:\n\n{ticket_list}"
+    
+    await interaction.response.send_message(embed=embed, ephemeral=True)
 
 bot.run(TOKEN)
