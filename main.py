@@ -1069,24 +1069,51 @@ async def owner_spin(interaction: discord.Interaction, names: str):
     await asyncio.sleep(2)
     await interaction.followup.send(f"🎉 The winner is: **{winner}**!")
 
-@bot.tree.command(name="admincmds", description="ADMIN: View secret commands")
-async def admincmds(interaction: discord.Interaction):
-    if interaction.user.id not in OWNER_IDS and not interaction.user.guild_permissions.administrator:
-        await interaction.response.send_message("❌ You are not an admin.", ephemeral=True)
-        return
-    embed = discord.Embed(title="🔒 Admin Control Panel", color=0xFF0000)
-    embed.add_field(name="💰 Money Printer", value="`/add_coins @user [amount]` - Give money\n`/remove_coins @user [amount]` - Take money", inline=False)
-    embed.add_field(name="📢 Events", value="`/start_auction` - Start auction\n`/giveaway` - Start giveaway\n`/night_market` - Toggle sale", inline=False)
-    embed.add_field(name="⚡ Drops", value="`/drop_steal` - Flash sale\n`/stock_rain` - Fake drop event", inline=False)
-    await interaction.response.send_message(embed=embed, ephemeral=True)
+# --- 📜 THE TITAN-TIER COMMAND INDEX ---
 
-@bot.tree.command(name="cmds", description="View all available commands")
+@bot.tree.command(name="cmds", description="View all available Titan-Tier commands")
 async def cmds(interaction: discord.Interaction):
-    embed = discord.Embed(title="📜 Moon's Command List", color=0x9B59B6)
-    embed.add_field(name="💸 Economy", value="`/balance`, `/pay`, `/buycoins`, `/leaderboard`", inline=False)
-    embed.add_field(name="🎰 Gambling", value="`/slots`, `/roulette`, `/bid`", inline=False)
-    embed.add_field(name="🛠️ Grinding", value="`/work`, `/weekly`", inline=False)
-    embed.add_field(name="👮 Staff", value="`/workhours`", inline=False)
+    embed = discord.Embed(
+        title="🌕 MOON'S SHOP | COMMAND INDEX", 
+        description="Detailed list of all available modules for customers and staff.",
+        color=0x000000
+    )
+    
+    embed.add_field(
+        name="💰 ECONOMY & SHOP", 
+        value="`/balance` - Check your wallet\n`/pay` - Transfer coins\n`/buycoins` - Purchase MC via PayPal/LTC\n`/tax` - Calculate server fees\n`/website` - Official Webstore", 
+        inline=False
+    )
+    
+    embed.add_field(
+        name="🎰 GAMBLING & CASINO", 
+        value="`/lotto` - Friday Jackpot Entry (0.3 MC)\n`/lotto_check` - View your tickets\n`/slots` - Spin the machine\n`/roulette` - Bet on colors", 
+        inline=False
+    )
+    
+    embed.add_field(
+        name="🛠️ GRINDING & REWARDS", 
+        value="`/work` - 12h Shift\n`/weekly` - Claim allowance\n`/refer` - Earn coins by inviting friends", 
+        inline=False
+    )
+    
+    embed.add_field(
+        name="🎫 SUPPORT & REPUTATION", 
+        value="`/ticket_setup` - Open shop panel\n`/vouch` - Review staff & rank up\n`/staff_inspect` - View salesman stats", 
+        inline=False
+    )
+
+    # Admin section only shows for authorized users
+    if interaction.user.id in OWNER_IDS or interaction.user.guild_permissions.administrator:
+        embed.add_field(
+            name="🔒 ADMIN & LOGISTICS", 
+            value="`/add_coins` | `/remove_coins` | `/night_market` | `/restock` | `/end_auction` | `/workhours` | `/say` | `/admincmds`", 
+            inline=False
+        )
+
+    embed.set_thumbnail(url=bot.user.avatar.url if bot.user.avatar else None)
+    embed.set_footer(text="Moon's Shop Automation • High-Tier Logistics")
+    
     await interaction.response.send_message(embed=embed)
 
 @bot.tree.command(name="say", description="ADMIN: Make the bot say something")
