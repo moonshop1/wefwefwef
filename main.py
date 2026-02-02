@@ -844,35 +844,9 @@ async def restock(interaction: discord.Interaction, item: str, amount: int, chan
     embed.add_field(name="Status", value="✅ Available Now", inline=False)
     embed.set_footer(text="Get it before it's gone!")
     
-    # Send to the chosen channel with an @here ping to notify buyers
     await channel.send(content="@here", embed=embed)
     await interaction.response.send_message(f"✅ Restock alert sent to {channel.mention}!", ephemeral=True)
-
-    # 🥪 BREAK LOGIC
-    elif message.channel.id == CH_BREAK:
-        role_on = message.guild.get_role(ROLE_ON_DUTY)
-        role_break = message.guild.get_role(ROLE_BREAK)
-        if role_on and role_break:
-            await user.remove_roles(role_on)
-            await user.add_roles(role_break)
-            
-            data = load_data()
-            if "shifts" not in data: data["shifts"] = {}
-            start_time = data["shifts"].get(user_id, {}).get("start_time")
-            
-            if start_time:
-                end_time = datetime.datetime.now().timestamp()
-                duration_seconds = end_time - start_time
-                
-                data["shifts"][user_id]["total_seconds"] += duration_seconds
-                data["shifts"][user_id]["start_time"] = None
-                save_data(data)
-                
-                hours = int(duration_seconds // 3600)
-                minutes = int((duration_seconds % 3600) // 60)
-                await message.channel.send(f"🥪 **Shift Paused.** You worked **{hours}h {minutes}m** before this break.")
-            await message.add_reaction("🥪")
-
+    
 # --- 🎰 SLOTS & WEEKLY ---
 
 @bot.tree.command(name="slots", description="Spin the slot machine! Win big!")
@@ -1208,5 +1182,43 @@ async def ticket_setup(interaction: discord.Interaction):
     
     await interaction.channel.send(embed=embed, view=MainHub())
     await interaction.response.send_message("🚀 Shop Hub Online.", ephemeral=True)
+
+# --- 🥪 BREAK LOGIC (This MUST be in its own event) ---
+@bot.event
+async def on_message(message):
+    if message.author.bot:
+        return
+
+    if message.channel.id == CH_BREAK:  # Changed 'elif' to 'if'
+        user = message.author
+        user_id = str(user.id)
+        role_on = message.guild.get_role(ROLE_ON_DUTY)
+        role_break = message.guild.get_role(ROLE_BREAK)
+        
+        if role_on and role_break:
+            await user.remove_roles(role_on)
+            await user.add_roles(role_break)
+            
+            data = load_data()
+            if "shifts" not in data: data["shifts"] = {}
+            if user_id not in data["shifts"]: data["shifts"][user_id] = {"total_seconds": 0, "start_time": None}
+            
+            start_time = data["shifts"].get(user_id, {}).get("start_time")
+            
+            if start_time:
+                end_time = datetime.datetime.now().timestamp()
+                duration_seconds = end_time - start_time
+                
+                data["shifts"][user_id]["total_seconds"] += duration_seconds
+                data["shifts"][user_id]["start_time"] = None
+                save_data(data)
+                
+                hours = int(duration_seconds // 3600)
+                minutes = int((duration_seconds % 3600) // 60)
+                await message.channel.send(f"🥪 **Shift Paused.** You worked **{hours}h {minutes}m** before this break.")
+            await message.add_reaction("🥪")
+
+    # Important: This line allows other commands to still work
+    await bot.process_commands(message)
 
 bot.run(TOKEN)
