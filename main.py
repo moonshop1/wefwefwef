@@ -111,7 +111,7 @@ def update_balance(user_id, amount):
 
 @bot.tree.command(name="add_coins", description="ADMIN: Add Moon Coins to a user's wallet")
 @app_commands.describe(user="The customer", amount="Amount of coins to add")
-async def add_coins(interaction: discord.Interaction, user: discord.Member, amount: int):
+async def add_coins(interaction: discord.Interaction, user: discord.Member, amount: float):
     if interaction.user.id not in OWNER_IDS and not interaction.user.guild_permissions.administrator:
         await interaction.response.send_message("❌ Only Moon can print money.", ephemeral=True)
         return
