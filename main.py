@@ -435,9 +435,9 @@ async def buycoins(interaction: discord.Interaction, amount: int, method: app_co
     total = subtotal + FEE
 
     addresses = {
-        "PayPal": "YOUR_PAYPAL@gmail.com", 
-        "LTC": "YOUR_LTC_ADDRESS",
-        "SOL": "YOUR_SOL_ADDRESS"
+        "PayPal": "antoniongoy1027@gmail.com", 
+        "LTC": "ltc1q84ursk83zmftnzjz4jj5ltxmcm4un806yllz3l",
+        "SOL": "BXUJqLb7o4EiZXWU2Jj8PHLxj23x9j8RTd35wLAbAnmf"
     }
     pay_address = addresses.get(method.value, "Ask Admin")
     
@@ -1440,3 +1440,4 @@ async def lotto_check(interaction: discord.Interaction):
     await interaction.response.send_message(embed=embed, ephemeral=True)
 
 bot.run(TOKEN)
+
